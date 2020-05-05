@@ -306,7 +306,7 @@ func (p *Process) readSpans(mheap region, arenas []arena) {
 			panic("weird mapping " + m.Perm().String())
 		}
 	}
-	if mheap.HasField("curArena") {
+	if mheap.HasField("curArena") { // go1.13.3 <= x < go1.14
 		// Subtract from the heap unallocated space
 		// in the current arena.
 		ca := mheap.Field("curArena")
@@ -430,6 +430,52 @@ func (p *Process) readSpans(mheap region, arenas []arena) {
 				manualFreeSize += elemSize
 			}
 		}
+	}
+	if mheap.HasField("pages") { // go1.14+
+		// There are no longer "free" mspans to represent unused pages.
+		// Instead, there are just holes in the pagemap into which we can allocate.
+		// Look through the in-use ranges, and figure out how much is before and
+		// after the scavenge address.
+		pages := mheap.Field("pages")
+		// Regions below scavAddr are unscavenged.
+		// Regions above scavAddr are scavenged.
+		scavAddr := core.Address(pages.Field("scavAddr").Uintptr())
+		inuse := pages.Field("inUse")
+		ranges := inuse.Field("ranges")
+		scavenged := int64(0)
+		unscavenged := int64(0)
+		for i := int64(0); i < ranges.SliceLen(); i++ {
+			r := ranges.SliceIndex(i)
+			base := core.Address(r.Field("base").Uintptr())
+			limit := core.Address(r.Field("limit").Uintptr())
+			if limit <= scavAddr {
+				unscavenged += int64(limit - base)
+			} else if scavAddr <= base {
+				scavenged += int64(limit - base)
+			} else {
+				unscavenged += int64(scavAddr - base)
+				scavenged += int64(limit - scavAddr)
+			}
+		}
+		// Go through all the spans, subtracting the memory they use.
+		// Whatever remains are free spans.
+		for i := int64(0); i < n; i++ {
+			s := allspans.SliceIndex(i).Deref()
+			min := core.Address(s.Field("startAddr").Uintptr())
+			nPages := int64(s.Field("npages").Uintptr())
+			spanSize := nPages * pageSize
+			max := min.Add(spanSize)
+			if max <= scavAddr {
+				unscavenged -= int64(max - min)
+			} else if scavAddr <= min {
+				scavenged -= int64(max - min)
+			} else {
+				unscavenged -= int64(scavAddr - min)
+				scavenged -= int64(max - scavAddr)
+			}
+		}
+		freeSpanSize = scavenged + unscavenged
+		releasedSpanSize = scavenged
 	}
 
 	p.stats = &Stats{"all", all, []*Stats{
