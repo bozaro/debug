@@ -1,4 +1,4 @@
-module golang.org/x/debug
+module github.com/bozaro/debug
 
 go 1.11
 
