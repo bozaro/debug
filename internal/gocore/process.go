@@ -287,6 +287,8 @@ func (p *Process) readSpans(mheap region, arenas []arena) {
 		switch m.Perm() {
 		case core.Read:
 			readOnly += size
+		case core.Exec:
+			text += size
 		case core.Read | core.Exec:
 			text += size
 		case core.Read | core.Write:
